@@ -8,7 +8,7 @@ a fleet of independent units reports events, this service consolidates
 them into a shared, trustable library the fleet reads back from.
 
 Built on [Lár](https://github.com/snath-ai/lar)'s checkpoint layer and
-[lar-dmn](https://github.com/snath-ai/DMN)'s memory-layer primitives · License: not yet set
+[lar-dmn](https://github.com/snath-ai/DMN)'s memory-layer primitives · License: Apache 2.0
 
 ---
 
@@ -100,9 +100,8 @@ fleet-transfer results it was validated against, are established in:
 ## Status
 
 Real, tested (`pytest tests/`, 10/10 passing), not yet load-tested or
-deployed persistently. Public as of 2026-09. No `LICENSE` file yet, a
-separate, deliberate decision still pending, don't assume Apache 2.0 or
-any other terms until one is actually added.
+deployed persistently. Public as of 2026-09. Licensed Apache 2.0 as of
+2026-10, matching the rest of the Snath AI open-source series.
 
 ---
 
