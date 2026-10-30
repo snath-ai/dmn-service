@@ -76,6 +76,24 @@ This is clearly marked as a derived recommendation, not the paper's own
 formula -- a consuming unit can equally choose to ignore it and set its own
 tau_sim (the paper's mechanism explicitly allows a fixed router-level
 tau_sim; the per-cluster value here is a convenience default).
+
+Representative members (also an engineering choice, not from the paper,
+added 2026-10-30 after a real measured failure): serving ONLY the centroid
+means a receiving unit fitting on it is fitting on one averaged point,
+not the n_events original ones. Measured directly, over real HTTP, N=200
+trials (snath-av's dmn_sync.py): a correction that genuinely helped when
+fit on its 18 original examples (held-out 0.875->0.975) did nothing when
+the same unit instead fit on just the pulled centroid (0.958->0.958,
+divergence barely moved). The centroid is correct as the paper's own
+cluster-mean definition -- this isn't a bug in that formula, it's a real
+information-loss cost of compressing a whole cluster to one point when
+the correction needs to reshape a decision boundary rather than nudge it.
+``representative_members`` ships a SMALL (<= 5), bounded-size subset of
+the real submitted anchors alongside the centroid -- the one closest to
+it (the "typical" case) plus up to four farthest from it (the cluster's
+actual spread, by the same ``member_cosine_similarities`` already
+computed below) -- still far more compact than raw history, but no
+longer a single point.
 """
 from __future__ import annotations
 
@@ -97,6 +115,8 @@ W_MIN = 0.40  # paper's injection gate (Sec. Delta-Space Adapter Library remark)
 
 TAU_SIM_STD_MULTIPLIER = 2.0  # matches fleet_clinical_pipeline.py's own
 # "mean +/- 2*std" gating convention (documented above)
+
+MAX_REPRESENTATIVE_MEMBERS = 5  # see module docstring, "Representative members"
 
 
 def _mean_vector(vectors: Sequence[Sequence[float]]) -> List[float]:
@@ -130,10 +150,13 @@ def consolidate_class(
     """
     Reduce every raw event submitted under ``class_name`` to one library
     entry: centroid (Delta_bar_c, the paper's cluster centroid = mean of
-    members), a derived per-cluster cosine-similarity floor (tau_sim, see
-    module docstring for why this is an engineering derivation, not the
-    paper's own formula), and the temporal-decay ingredients (decay_lambda,
-    consolidated_at) a receiving unit needs to compute W(delta_t) itself.
+    members), a small bounded set of representative raw members (see
+    module docstring, "Representative members" -- an engineering addition,
+    not from the paper), a derived per-cluster cosine-similarity floor
+    (tau_sim, see module docstring for why this is an engineering
+    derivation, not the paper's own formula), and the temporal-decay
+    ingredients (decay_lambda, consolidated_at) a receiving unit needs to
+    compute W(delta_t) itself.
 
     ``events`` must be a non-empty list of dicts each containing at least
     ``concept_anchor`` (the raw Delta_i vector) -- all vectors must share
@@ -155,6 +178,21 @@ def consolidate_class(
     tau_sim = max(0.0, min(1.0, (sum(member_sims) / len(member_sims))
                             - TAU_SIM_STD_MULTIPLIER * _std(member_sims)))
 
+    # Representative members: the one closest to centroid (typical case) +
+    # up to MAX_REPRESENTATIVE_MEMBERS-1 farthest from it (the cluster's
+    # real spread), ranked by the same member_sims already computed above.
+    # See module docstring, "Representative members".
+    order = sorted(range(len(anchors)), key=lambda i: member_sims[i])  # ascending: farthest first
+    rep_indices = []
+    if order:
+        rep_indices.append(order[-1])  # closest to centroid (highest similarity)
+        for i in order:
+            if len(rep_indices) >= MAX_REPRESENTATIVE_MEMBERS:
+                break
+            if i not in rep_indices:
+                rep_indices.append(i)
+    representative_members = [anchors[i] for i in rep_indices]
+
     n_source_events_total = sum(int(e.get("n_source_events", 1)) for e in events)
     fc = failure_class or class_name
     decay_lambda = FAILURE_CLASS_DECAY_LAMBDA.get(fc, DEFAULT_DECAY_LAMBDA)
@@ -163,6 +201,7 @@ def consolidate_class(
         "class_name": class_name,
         "failure_class": fc,
         "centroid": centroid,
+        "representative_members": representative_members,
         "dim": dim,
         "tau_sim": round(tau_sim, 6),
         "member_cosine_similarities": [round(s, 6) for s in member_sims],

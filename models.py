@@ -35,6 +35,14 @@ class LibraryEntryOut(BaseModel):
     class_name: str
     failure_class: str
     centroid: List[float]
+    representative_members: List[List[float]] = Field(
+        default_factory=list,
+        description="Small (<=5) bounded subset of the real submitted anchors -- "
+                    "the one closest to the centroid plus up to four farthest from "
+                    "it -- so a receiving unit can fit on more than one averaged "
+                    "point. Engineering addition, not from the LTL paper; see "
+                    "consolidation.py's module docstring.",
+    )
     dim: int
     tau_sim: float
     n_events: int
