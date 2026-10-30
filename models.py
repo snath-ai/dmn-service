@@ -66,3 +66,25 @@ class HealthOut(BaseModel):
     status: str
     unconfirmed_library_commits: int
     detail: Optional[str] = None
+
+
+class UnitSummary(BaseModel):
+    unit_id: str
+    event_count: int
+    classes: List[str]
+    last_seen: Optional[str] = None
+
+
+class FleetOut(BaseModel):
+    """Everything a fleet dashboard needs in one call: every unit and
+    class ever seen (even pre-consolidation), plus the current
+    consolidated library and health. A stable, extensible contract --
+    new fields can be added here without breaking existing dashboard
+    code, which is the point of having one endpoint for this instead of
+    the dashboard assembling its own picture from several calls."""
+    units: List[UnitSummary]
+    known_classes: List[str]
+    pending_classes: Dict[str, int]  # class_name -> raw event count, for classes not yet consolidated
+    min_events_for_consolidation: int
+    library: LibraryOut
+    health: HealthOut

@@ -68,6 +68,7 @@ from lar_import import (
 
 LIBRARY_CASE_ID = "consolidated_library"
 LIBRARY_COMMIT_NODE_ID = "commit_consolidated_library"
+FLEET_INDEX_CASE_ID = "_fleet_index"
 
 
 def _events_case_id(class_name: str) -> str:
@@ -122,8 +123,15 @@ class DMNStore:
         """
         Durably appends one raw fleet event to its class's signed event log.
         Returns the new total count of raw events stored for that class.
+        Also updates the fleet index (every class and unit ever seen, even
+        before a class crosses the consolidation threshold) -- without
+        this, there is no way to answer "what units exist" or "what classes
+        exist but haven't consolidated yet" without the caller already
+        knowing the class name in advance, which GET /fleet needs not to
+        require.
         """
         class_name = event["class_name"]
+        unit_id = event.get("unit_id", "unknown")
         case_id = _events_case_id(class_name)
         with self._lock:
             existing = self.checkpoint_store.load(case_id)
@@ -136,7 +144,34 @@ class DMNStore:
                 reason="fleet event ingest",
             )
             self.checkpoint_store.save(cp)
+            self._record_in_fleet_index(unit_id, class_name, event.get("timestamp"))
             return len(events)
+
+    def _record_in_fleet_index(self, unit_id: str, class_name: str, timestamp: Optional[str]) -> None:
+        """Called with self._lock already held (from append_event)."""
+        cp = self.checkpoint_store.load(FLEET_INDEX_CASE_ID)
+        index = dict(cp.state) if cp else {"classes": [], "units": {}}
+
+        if class_name not in index["classes"]:
+            index["classes"] = index["classes"] + [class_name]
+
+        units = dict(index["units"])
+        u = dict(units.get(unit_id, {"event_count": 0, "classes": [], "last_seen": None}))
+        u["event_count"] = u["event_count"] + 1
+        if class_name not in u["classes"]:
+            u["classes"] = u["classes"] + [class_name]
+        u["last_seen"] = timestamp
+        units[unit_id] = u
+        index["units"] = units
+
+        self.checkpoint_store.save(Checkpoint(
+            case_id=FLEET_INDEX_CASE_ID, resume_node_id="dmn_fleet_index",
+            state=index, reason=f"index update: unit={unit_id} class={class_name}",
+        ))
+
+    def get_fleet_index(self) -> Dict[str, Any]:
+        cp = self.checkpoint_store.load(FLEET_INDEX_CASE_ID)
+        return dict(cp.state) if cp else {"classes": [], "units": {}}
 
     def get_events(self, class_name: str) -> List[Dict[str, Any]]:
         cp = self.checkpoint_store.load(_events_case_id(class_name))

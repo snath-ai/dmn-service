@@ -71,6 +71,7 @@ from typing import Dict
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from consolidation import consolidate_class
 from lar_import import CheckpointIntegrityError
@@ -78,10 +79,12 @@ from models import (
     ConsolidateResult,
     EventAck,
     EventIn,
+    FleetOut,
     HealthOut,
     LibraryEntryOut,
     LibraryOut,
     ResolveCommitRequest,
+    UnitSummary,
 )
 from storage import DMNStore, LibraryUnconfirmedCommitError
 
@@ -172,6 +175,34 @@ def health() -> HealthOut:
     return HealthOut(status="ok", unconfirmed_library_commits=0)
 
 
+@app.get("/fleet", response_model=FleetOut)
+def fleet() -> FleetOut:
+    """
+    Everything the dashboard needs in one call -- every unit and class
+    ever seen (even pre-consolidation, which GET /library alone can't
+    show), the current consolidated library, and health. Designed as one
+    stable contract so the dashboard (or any future client) never has to
+    assemble its own picture from several endpoints, and new fields can
+    be added here later without breaking it.
+    """
+    index = store.get_fleet_index()
+    units = [UnitSummary(unit_id=uid, **u) for uid, u in index.get("units", {}).items()]
+    lib = get_library()
+    pending = {
+        cn: len(store.get_events(cn))
+        for cn in index.get("classes", [])
+        if cn not in lib.classes
+    }
+    return FleetOut(
+        units=units,
+        known_classes=index.get("classes", []),
+        pending_classes=pending,
+        min_events_for_consolidation=MIN_EVENTS_FOR_CONSOLIDATION,
+        library=lib,
+        health=health(),
+    )
+
+
 @app.post("/events", response_model=EventAck)
 def submit_event(event: EventIn) -> EventAck:
     """
@@ -250,3 +281,11 @@ def resolve_commit(req: ResolveCommitRequest):
     """
     marker = store.resolve_unconfirmed_commit(step=req.step, happened=req.happened)
     return JSONResponse({"resolved_step": marker.step, "status": marker.status})
+
+
+# Served at /dashboard/, same origin as the API it calls -- the dashboard
+# uses relative fetch('/fleet') etc., so pointing it at a different host
+# later (e.g. the Mac Studio) needs no code change, only opening the
+# browser at that host's /dashboard/ instead of this one's.
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+app.mount("/dashboard", StaticFiles(directory=_static_dir, html=True), name="dashboard")

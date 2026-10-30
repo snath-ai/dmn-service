@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snath AV — Fleet Control</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #121722; --border: #232b3a; --text: #e6e9ef;
+    --muted: #8993a6; --accent: #5aa9ff; --ok: #3ecf8e; --warn: #f5a623; --bad: #ef5a6f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
+    padding: 24px; max-width: 1100px; margin-inline: auto;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .ok .dot { background: var(--ok); } .ok { color: var(--ok); }
+  .bad .dot { background: var(--bad); } .bad { color: var(--bad); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 7px 10px; border-bottom: 1px solid #1a2130; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .pill { background: #1a2130; border-radius: 6px; padding: 1px 6px; font-size: 11px; color: var(--accent); }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 10px; }
+  .progress { background: #1a2130; border-radius: 5px; height: 6px; width: 100px; overflow: hidden; }
+  .progress > div { background: var(--warn); height: 100%; }
+  button {
+    background: var(--accent); color: #06101f; border: none; border-radius: 6px;
+    padding: 6px 12px; font-weight: 600; font-size: 12px; cursor: pointer;
+  }
+  button.danger { background: var(--bad); }
+  input, select {
+    background: #0e1420; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 5px 8px; font-size: 12px; margin-right: 6px;
+  }
+  .alert { border: 1px solid var(--warn); background: #241b0d; border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 16px; }
+  .alert h3 { margin: 0 0 6px; color: var(--warn); font-size: 13px; }
+  .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+</style>
+</head>
+<body>
+  <h1>Snath AV — Fleet Control</h1>
+  <div class="sub">
+    <span id="origin" class="mono"></span> ·
+    <span id="healthBadge" class="badge ok"><span class="dot"></span><span id="healthText">checking…</span></span>
+  </div>
+
+  <div id="unconfirmedAlert" style="display:none" class="alert">
+    <h3>Unresolved library commit</h3>
+    <div id="unconfirmedDetail" class="meta"></div>
+    <div style="margin-top:10px">
+      <input id="resolveStep" type="number" placeholder="step" style="width:70px">
+      <select id="resolveHappened"><option value="true">it DID land</option><option value="false">it did NOT land</option></select>
+      <button onclick="resolveCommit()">Resolve</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Units</h2>
+    <table id="unitsTable"><thead><tr><th>unit_id</th><th>events</th><th>classes</th><th>last seen</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Consolidated classes</h2>
+    <table id="libTable"><thead><tr><th>class</th><th>failure_class</th><th>n_events</th>
+      <th>contributing units</th><th>τ_sim</th><th>consolidated_at</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Pending (not yet consolidated)</h2>
+    <table id="pendingTable"><thead><tr><th>class</th><th>progress</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+
+<script>
+const API = ""; // same-origin, relative -- works unchanged against any host this is served from
+document.getElementById("origin").textContent = location.origin;
+
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function emptyRow(n, label) {
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = n; td.className = "empty"; td.textContent = label;
+  tr.appendChild(td); return tr;
+}
+
+async function refresh() {
+  let fleet, health;
+  try {
+    const r = await fetch(`${API}/fleet`);
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      renderUnconfirmed(true, body.detail || `HTTP ${r.status}`);
+      return;
+    }
+    fleet = await r.json();
+    renderUnconfirmed(fleet.health.unconfirmed_library_commits > 0, fleet.health.detail);
+  } catch (e) {
+    setHealth(false, "unreachable: " + e.message);
+    return;
+  }
+  setHealth(fleet.health.status === "ok", fleet.health.status === "ok" ? "ok" : fleet.health.detail);
+  renderUnits(fleet.units);
+  renderLibrary(fleet.library.classes);
+  renderPending(fleet.pending_classes, fleet.min_events_for_consolidation);
+}
+
+function setHealth(ok, text) {
+  const b = document.getElementById("healthBadge");
+  b.className = "badge " + (ok ? "ok" : "bad");
+  document.getElementById("healthText").textContent = text;
+}
+
+function renderUnconfirmed(show, detail) {
+  document.getElementById("unconfirmedAlert").style.display = show ? "block" : "none";
+  document.getElementById("unconfirmedDetail").textContent = detail || "";
+}
+
+function renderUnits(units) {
+  const tbody = document.querySelector("#unitsTable tbody");
+  tbody.innerHTML = "";
+  if (!units.length) { tbody.appendChild(emptyRow(4, "no units have reported yet")); return; }
+  for (const u of units) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="mono">${esc(u.unit_id)}</td><td>${u.event_count}</td>
+      <td>${u.classes.map(c => `<span class="pill">${esc(c)}</span>`).join(" ")}</td>
+      <td class="meta mono">${esc(u.last_seen || "—")}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderLibrary(classes) {
+  const tbody = document.querySelector("#libTable tbody");
+  tbody.innerHTML = "";
+  const names = Object.keys(classes);
+  if (!names.length) { tbody.appendChild(emptyRow(6, "nothing consolidated yet")); return; }
+  for (const name of names) {
+    const c = classes[name];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="mono">${esc(name)}</td><td>${esc(c.failure_class)}</td>
+      <td>${c.n_events} (${c.n_source_events_total} src)</td>
+      <td>${c.contributing_units.map(u => `<span class="pill">${esc(u)}</span>`).join(" ")}</td>
+      <td class="mono">${c.tau_sim.toFixed(3)}</td>
+      <td class="meta mono">${esc(c.consolidated_at)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderPending(pending, minEvents) {
+  const tbody = document.querySelector("#pendingTable tbody");
+  tbody.innerHTML = "";
+  const names = Object.keys(pending);
+  if (!names.length) { tbody.appendChild(emptyRow(2, "nothing pending")); return; }
+  for (const name of names) {
+    const n = pending[name];
+    const pct = Math.min(100, Math.round(100 * n / minEvents));
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="mono">${esc(name)}</td>
+      <td><div class="progress"><div style="width:${pct}%"></div></div>
+          <span class="meta">${n}/${minEvents}</span></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function resolveCommit() {
+  const step = parseInt(document.getElementById("resolveStep").value, 10);
+  const happened = document.getElementById("resolveHappened").value === "true";
+  if (!step) { alert("enter a step number"); return; }
+  const r = await fetch(`${API}/admin/resolve_commit`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step, happened }),
+  });
+  if (!r.ok) { alert("resolve failed: " + (await r.text())); return; }
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
